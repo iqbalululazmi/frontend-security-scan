@@ -25,7 +25,7 @@ jobs:
         run: python3 scan.py self-test
       - name: Fixture check (vulnerable/ must be caught, clean/ must report 0)
         run: python3 tests/verify_dummy.py
-      - name: Security scan: SSRF + secrets (enforce)
+      - name: Security scan (SSRF, XSS, secrets; enforce mode)
         run: python3 scan.py scan "$TARGET" --mode enforce --fail-on ERROR
       - name: Publish summary
         if: always()
