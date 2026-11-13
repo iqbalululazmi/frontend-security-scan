@@ -1,0 +1,172 @@
+rules:
+  # ---------------------------------------------------------------------------
+  # SSRF: user-controlled input -> URL of a server-side HTTP request
+  #
+  #   sources    where attacker-controlled data enters (query, body, params, headers, FormData)
+  #   sinks      server-side HTTP clients (fetch, axios, got, http/https, undici, ...)
+  #   sanitizers allowlist guards + encoders. Guard convention: a function named
+  #              assert|validate|ensure|check|verify|sanitize + ...Url|Host|Target|Destination|Endpoint
+  #              that THROWS (or returns the validated URL) when the destination is not allowed.
+  #
+  # A request whose URL starts with a fixed literal scheme+host (https://api.x.com/${id})
+  # is not reported: user input there can only change the path, not the host.
+  # ---------------------------------------------------------------------------
+  - id: ssrf-user-input-to-server-request
+    mode: taint
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      User-controlled input flows into the URL of a server-side HTTP request (SSRF, CWE-918).
+      An attacker can make the server call internal services or cloud metadata endpoints
+      such as http://169.254.169.254/. Validate the destination with an allowlist guard
+      (assertAllowedUrl / validate*Url), keep the host fixed and interpolate only encoded
+      path segments, or do not fetch user-supplied URLs at all.
+    metadata:
+      category: security
+      cwe: ["CWE-918: Server-Side Request Forgery (SSRF)"]
+      owasp: ["A10:2021 - Server-Side Request Forgery (SSRF)"]
+      confidence: HIGH
+      impact: HIGH
+      likelihood: MEDIUM
+      technology: [nextjs, express, remix, react]
+    options:
+      taint_assume_safe_booleans: true
+      taint_assume_safe_numbers: true
+    pattern-sources:
+      # Request-like objects: Express req, Fetch API / Next / Remix request, ctx, context, loader args
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.query
+              - pattern: $REQ.body
+              - pattern: $REQ.params
+              - pattern: $REQ.url
+              - pattern: $REQ.originalUrl
+              - pattern: $REQ.nextUrl
+              - pattern: $REQ.headers
+              - pattern: $REQ.cookies
+              - pattern: await $REQ.json()
+              - pattern: $REQ.json()
+              - pattern: await $REQ.formData()
+              - pattern: $REQ.formData()
+              - pattern: await $REQ.text()
+              - pattern: $REQ.text()
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: (?i)^(req|request|ctx|context|args|event)$
+      # Next.js App Router page props / Remix loader args: ({ searchParams }) / ({ params })
+      - patterns:
+          - pattern: searchParams
+          - pattern-either:
+              - pattern-inside: |
+                  function $F({..., searchParams, ...}) {...}
+              - pattern-inside: |
+                  function $F({..., searchParams, ...}: $T) {...}
+      - patterns:
+          - pattern: params
+          - pattern-either:
+              - pattern-inside: |
+                  function $F({..., params, ...}) {...}
+              - pattern-inside: |
+                  function $F({..., params, ...}: $T) {...}
+      # Next.js server actions: function foo(formData: FormData)
+      - patterns:
+          - pattern: $FD
+          - pattern-inside: |
+              function $F(..., $FD: FormData, ...) {...}
+    pattern-sanitizers:
+      # guard(url);  -> url is safe afterwards (guard throws on bad input)
+      - patterns:
+          - pattern: $G($X)
+          - metavariable-regex:
+              metavariable: $G
+              regex: ^(assert|validate|ensure|check|verify|sanitize)[A-Za-z]*(Url|URL|Host|Hostname|Target|Destination|Endpoint)[A-Za-z]*$
+          - focus-metavariable: $X
+        by-side-effect: true
+      # const safe = guard(url); / fetch(guard(url))  -> returned value is safe.
+      # Not applied to bare statements (guard(url);) so the side-effect sanitizer above wins there.
+      - patterns:
+          - pattern: $G(...)
+          - pattern-not-inside: |
+              $G(...);
+          - metavariable-regex:
+              metavariable: $G
+              regex: ^(assert|validate|ensure|check|verify|sanitize)[A-Za-z]*(Url|URL|Host|Hostname|Target|Destination|Endpoint)[A-Za-z]*$
+      - pattern: encodeURIComponent(...)
+      - pattern: Number(...)
+      - pattern: parseInt(...)
+      - pattern: parseFloat(...)
+    pattern-sinks:
+      # fetch(url) / globalThis.fetch(url)
+      - patterns:
+          - pattern-either:
+              - pattern: fetch($URL, ...)
+              - pattern: globalThis.fetch($URL, ...)
+          - focus-metavariable: $URL
+          - metavariable-regex:
+              metavariable: $URL
+              regex: (?s)^(?!\s*[`'"]https?://[A-Za-z0-9.-]+(:[0-9]+)?/)
+      # got(url), ky(url), ofetch(url), $fetch(url), needle(url), axios(url), superagent(url)
+      - patterns:
+          - pattern: $FN($URL, ...)
+          - metavariable-regex:
+              metavariable: $FN
+              regex: ^(got|ky|ofetch|\$fetch|needle|axios|superagent)$
+          - focus-metavariable: $URL
+          - metavariable-regex:
+              metavariable: $URL
+              regex: (?s)^(?!\s*[`'"]https?://[A-Za-z0-9.-]+(:[0-9]+)?/)
+      # axios.get(url), got.post(url), http.get(url), https.request(url), undici.request(url), ...
+      - patterns:
+          - pattern: $LIB.$M($URL, ...)
+          - metavariable-regex:
+              metavariable: $LIB
+              regex: ^(axios|got|ky|http|https|undici|needle|superagent)$
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(get|post|put|patch|delete|head|options|request|fetch|stream)$
+          - focus-metavariable: $URL
+          - metavariable-regex:
+              metavariable: $URL
+              regex: (?s)^(?!\s*[`'"]https?://[A-Za-z0-9.-]+(:[0-9]+)?/)
+      # axios({ url }), axios.request({ url }), got({ url })
+      - patterns:
+          - pattern-either:
+              - pattern: '$LIB({url: $URL, ...})'
+              - pattern: '$LIB.request({url: $URL, ...})'
+          - metavariable-regex:
+              metavariable: $LIB
+              regex: ^(axios|got|ky|needle|superagent|http|https|undici)$
+          - focus-metavariable: $URL
+          - metavariable-regex:
+              metavariable: $URL
+              regex: (?s)^(?!\s*[`'"]https?://[A-Za-z0-9.-]+(:[0-9]+)?/)
+      # axios.create({ baseURL }), http.request({ host / hostname })
+      - patterns:
+          - pattern-either:
+              - pattern: '$LIB.create({baseURL: $URL, ...})'
+              - pattern: '$LIB.request({host: $URL, ...})'
+              - pattern: '$LIB.request({hostname: $URL, ...})'
+          - metavariable-regex:
+              metavariable: $LIB
+              regex: ^(axios|got|http|https|undici)$
+          - focus-metavariable: $URL
+
+  # ---------------------------------------------------------------------------
+  # Next.js image optimizer acts as a server-side fetcher; a wildcard host lets
+  # anyone make your server request arbitrary hosts (SSRF / open image proxy).
+  # ---------------------------------------------------------------------------
+  - id: nextjs-image-remote-patterns-wildcard-host
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      next/image remotePatterns allows any host ("**"). The image optimizer will fetch
+      attacker-chosen URLs server-side (SSRF / open image proxy). List the exact hostnames you need.
+    metadata:
+      category: security
+      cwe: ["CWE-918: Server-Side Request Forgery (SSRF)"]
+      owasp: ["A10:2021 - Server-Side Request Forgery (SSRF)"]
+      confidence: HIGH
+      impact: MEDIUM
+      likelihood: MEDIUM
+      technology: [nextjs]
+    pattern-regex: hostname:\s*['"]\*\*['"]
