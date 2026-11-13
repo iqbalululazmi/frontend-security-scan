@@ -27,6 +27,16 @@ RULES_DIR = ROOT / "config" / "semgrep"
 SEVERITY_RANK = {"INFO": 1, "WARNING": 2, "ERROR": 3}
 EXCLUDES = ["node_modules", "dist", "build", ".next", ".remix", ".turbo", "coverage", "*.min.js", "*.map"]
 SKIP_REPO_DIRS = {"node_modules", ".git", "security-reports"}
+# Provider-shaped fake tokens used by test fixtures. Assembled from parts so the literal token never appears
+# in the repo (GitHub push protection blocks it). Files named *.tmpl use {{NAME}} placeholders.
+FIXTURE_VALUES = {
+    "STRIPE_LIVE": "sk_" + "live_" + "0" * 21,
+    "AWS_KEY": "AKIA" + "IOSFODNN7EXAMPLE",
+    "GITHUB_TOKEN": "gh" + "p_" + "0123456789abcdefghijklmnopqrstuvwxyz",
+    "SLACK_TOKEN": "xo" + "xb-0000000000-fakefakefake",
+}
+SECRET_RULE_PREFIX = "secret-"
+REDACTED = "[redacted: secret value]"
 
 
 def die(msg, code=2):
@@ -69,7 +79,34 @@ def run_semgrep(repo: Path, out_dir: Path):
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode not in (0, 1) or not json_path.exists():
         die(f"semgrep failed on {repo.name} (exit {proc.returncode}):\n{proc.stderr.strip()[-1500:]}")
+    redact_secrets(out_dir)
     return json_path
+
+
+def redact_secrets(out_dir: Path):
+    """Reports are uploaded as CI artifacts, so never keep a leaked secret's value in them.
+    Findings from rules whose id starts with SECRET_RULE_PREFIX lose their code snippet."""
+    json_path, sarif_path = out_dir / "semgrep.json", out_dir / "semgrep.sarif"
+    data = json.loads(json_path.read_text())
+    for r in data.get("results", []):
+        if r["check_id"].startswith(SECRET_RULE_PREFIX):
+            r.setdefault("extra", {})["lines"] = REDACTED
+            r["extra"].pop("metavars", None)
+    json_path.write_text(json.dumps(data, indent=2))
+    if sarif_path.exists():
+        sarif = json.loads(sarif_path.read_text())
+        for run in sarif.get("runs", []):
+            for res in run.get("results", []):
+                if not str(res.get("ruleId", "")).startswith(SECRET_RULE_PREFIX):
+                    continue
+                for loc in res.get("locations", []):
+                    region = loc.get("physicalLocation", {}).get("region", {})
+                    if "snippet" in region:
+                        region["snippet"] = {"text": REDACTED}
+                    ctx = loc.get("physicalLocation", {}).get("contextRegion", {})
+                    if "snippet" in ctx:
+                        ctx["snippet"] = {"text": REDACTED}
+        sarif_path.write_text(json.dumps(sarif, indent=2))
 
 
 def fingerprint(check_id: str, repo_name: str, rel_path: str, code: str) -> str:
@@ -202,9 +239,24 @@ def cmd_baseline(args):
     return 0
 
 
+def render_tree(src: Path, dst: Path):
+    """Copy a fixture tree to dst, filling {{PLACEHOLDERS}} in *.tmpl files and dropping the .tmpl suffix."""
+    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("node_modules", "dist", ".git", "__pycache__"), dirs_exist_ok=True)
+    for tmpl in sorted(dst.rglob("*.tmpl")):
+        text = tmpl.read_text()
+        for name, value in FIXTURE_VALUES.items():
+            text = text.replace("{{" + name + "}}", value)
+        tmpl.with_suffix("").write_text(text)
+        tmpl.unlink()
+
+
 def cmd_self_test(_args):
-    proc = subprocess.run([semgrep_bin(), "--test", "--metrics=off", "--disable-version-check", str(RULES_DIR)],
-                          capture_output=True, text=True)
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        rules = Path(tmp) / "semgrep"
+        render_tree(RULES_DIR, rules)
+        proc = subprocess.run([semgrep_bin(), "--test", "--metrics=off", "--disable-version-check", str(rules)],
+                              capture_output=True, text=True)
     tail = "\n".join(proc.stdout.strip().splitlines()[-8:])
     print(tail or proc.stderr.strip()[-800:])
     return 0 if proc.returncode == 0 else 1

@@ -7,10 +7,10 @@ on:
     inputs:
       path:
         description: Project folder to scan and build
-        default: dummy-projects/clean-react-app
+        default: dummy-projects/clean/react-vite
 
 env:
-  TARGET: ${{ inputs.path || 'dummy-projects/clean-react-app' }}
+  TARGET: ${{ inputs.path || 'dummy-projects/clean/react-vite' }}
 
 jobs:
   scan:
@@ -23,7 +23,9 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Rule unit tests
         run: python3 scan.py self-test
-      - name: SSRF scan (enforce)
+      - name: Fixture check (vulnerable/ must be caught, clean/ must report 0)
+        run: python3 tests/verify_dummy.py
+      - name: Security scan: SSRF + secrets (enforce)
         run: python3 scan.py scan "$TARGET" --mode enforce --fail-on ERROR
       - name: Publish summary
         if: always()

@@ -1,0 +1,1 @@
+{ "name": "dummy-remix-app", "private": true, "type": "module", "dependencies": { "@remix-run/node": "^2.12.0", "@remix-run/react": "^2.12.0", "react": "^18.3.0", "react-dom": "^18.3.0" } }

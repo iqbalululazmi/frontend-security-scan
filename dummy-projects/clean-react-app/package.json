@@ -1,8 +1,0 @@
-{
-  "name": "dummy-clean-react-app",
-  "private": true,
-  "type": "module",
-  "scripts": { "build": "vite build", "dev": "vite" },
-  "dependencies": { "react": "^18.3.0", "react-dom": "^18.3.0" },
-  "devDependencies": { "vite": "^5.4.0" }
-}

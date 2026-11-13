@@ -1,0 +1,27 @@
+rules:
+  # ---------------------------------------------------------------------------
+  # Review rule: dangerouslySetInnerHTML with a value that is neither a literal nor sanitized.
+  # Catches stored XSS (API data, markdown output) where no taint source is visible. It can fire on the
+  # same line as xss-dom-sink-tainted (which means the value is also user-controlled).
+  # ---------------------------------------------------------------------------
+  - id: xss-react-dangerously-set-inner-html
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      dangerouslySetInnerHTML receives a value that is not a literal and not passed through a sanitizer.
+      If it contains user- or API-supplied HTML it is stored XSS (CWE-79). Wrap it in DOMPurify.sanitize(...)
+      or render it as plain text.
+    metadata:
+      category: security
+      cwe: ["CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"]
+      owasp: ["A03:2021 - Injection"]
+      confidence: MEDIUM
+      impact: HIGH
+      likelihood: MEDIUM
+      technology: [react]
+    patterns:
+      - pattern: '<$C ... dangerouslySetInnerHTML={{__html: $V}} ... />'
+      - pattern-not: '<$C ... dangerouslySetInnerHTML={{__html: "..."}} ... />'
+      - metavariable-regex:
+          metavariable: $V
+          regex: (?is)^(?!\s*(?:[\w$]+\.)*(?:sanitize|escape|purify|safe)\w*\()

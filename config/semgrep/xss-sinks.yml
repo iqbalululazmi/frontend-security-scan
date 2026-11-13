@@ -1,0 +1,251 @@
+rules:
+  # ---------------------------------------------------------------------------
+  # XSS (CWE-79) for React web stacks.
+  #
+  #   xss-dom-sink-tainted            browser-side: attacker-controlled value -> HTML/JS/URL sink
+  #   xss-reflected-server-response   server-side: request data -> HTML response body
+  #   xss-eval-like                   eval / new Function / setTimeout(string) with a non-literal
+  #   xss-javascript-url-literal      href="javascript:..." in JSX
+  #
+  # Sanitizer convention (same idea as the SSRF guards): a call whose name is sanitize*, escape*,
+  # purify*, encode*, safe* or assertSafe* (DOMPurify.sanitize, escapeHtml, validator.escape, safeHref, ...)
+  # clears the taint. Rename or extend the regex if your team uses other names.
+  # The review rule for dangerouslySetInnerHTML lives in xss-review.yml.
+  # ---------------------------------------------------------------------------
+  - id: xss-dom-sink-tainted
+    mode: taint
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Attacker-controllable data (URL, hash, referrer, postMessage, storage, search params) reaches an
+      HTML, script or navigation sink (innerHTML, document.write, dangerouslySetInnerHTML, location,
+      href/src) without sanitization (DOM XSS, CWE-79). Render it as text, sanitize HTML with
+      DOMPurify.sanitize, or validate URLs to http(s) only.
+    metadata:
+      category: security
+      cwe: ["CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"]
+      owasp: ["A03:2021 - Injection"]
+      confidence: HIGH
+      impact: HIGH
+      likelihood: MEDIUM
+      technology: [react, browser]
+    options:
+      taint_assume_safe_booleans: true
+      taint_assume_safe_numbers: true
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: location.$P
+              - pattern: window.location.$P
+              - pattern: document.location.$P
+          - metavariable-regex:
+              metavariable: $P
+              regex: ^(search|hash|href|pathname)$
+      - pattern-either:
+          - pattern: document.URL
+          - pattern: document.documentURI
+          - pattern: document.referrer
+          - pattern: document.cookie
+          - pattern: localStorage.getItem(...)
+          - pattern: sessionStorage.getItem(...)
+          - pattern: useSearchParams()
+      # window.addEventListener("message", (e) => { ... e.data ... })
+      - patterns:
+          - pattern: $E.data
+          - pattern-either:
+              - pattern-inside: |
+                  window.addEventListener("message", ($E) => {...})
+              - pattern-inside: |
+                  window.addEventListener("message", function ($E) {...})
+              - pattern-inside: |
+                  addEventListener("message", ($E) => {...})
+      # Next.js server component: ({ searchParams })
+      - patterns:
+          - pattern: searchParams
+          - pattern-either:
+              - pattern-inside: |
+                  function $F({..., searchParams, ...}) {...}
+              - pattern-inside: |
+                  function $F({..., searchParams, ...}: $T) {...}
+    pattern-sanitizers:
+      - patterns:
+          - pattern: $F(...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: (?i)^(?:[\w$]+\.)*(?:sanitize|escape|purify|encode|safe|assertSafe)\w*$
+      - pattern: Number(...)
+      - pattern: parseInt(...)
+      - pattern: parseFloat(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $X.innerHTML = $V
+              - pattern: $X.outerHTML = $V
+              - pattern: $X.innerHTML += $V
+              - pattern: $X.insertAdjacentHTML($P, $V)
+              - pattern: document.write($V)
+              - pattern: document.writeln($V)
+              - pattern: location.href = $V
+              - pattern: window.location.href = $V
+              - pattern: window.location = $V
+              - pattern: location.assign($V)
+              - pattern: location.replace($V)
+              - pattern: window.location.assign($V)
+              - pattern: window.location.replace($V)
+              - pattern: '<$C ... dangerouslySetInnerHTML={{__html: $V}} ... />'
+              - pattern: '<$C ... href={$V} ... />'
+              - pattern: '<$C ... src={$V} ... />'
+          - focus-metavariable: $V
+
+  - id: xss-reflected-server-response
+    mode: taint
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Request data is written into an HTML response body without escaping (reflected XSS, CWE-79).
+      Express res.send(string) responds as text/html. Escape with an HTML escaper (escapeHtml,
+      validator.escape), return JSON (res.json) or text/plain, or render through a template engine
+      that auto-escapes.
+    metadata:
+      category: security
+      cwe: ["CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"]
+      owasp: ["A03:2021 - Injection"]
+      confidence: HIGH
+      impact: HIGH
+      likelihood: HIGH
+      technology: [express, nextjs, remix]
+    options:
+      taint_assume_safe_booleans: true
+      taint_assume_safe_numbers: true
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.query
+              - pattern: $REQ.body
+              - pattern: $REQ.params
+              - pattern: $REQ.url
+              - pattern: $REQ.originalUrl
+              - pattern: $REQ.headers
+              - pattern: $REQ.cookies
+              - pattern: await $REQ.json()
+              - pattern: await $REQ.text()
+              - pattern: await $REQ.formData()
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: (?i)^(req|request|ctx|context)$
+      - patterns:
+          - pattern: searchParams
+          - pattern-either:
+              - pattern-inside: |
+                  function $F({..., searchParams, ...}) {...}
+              - pattern-inside: |
+                  function $F({..., searchParams, ...}: $T) {...}
+      - patterns:
+          - pattern: params
+          - pattern-either:
+              - pattern-inside: |
+                  function $F({..., params, ...}) {...}
+              - pattern-inside: |
+                  function $F({..., params, ...}: $T) {...}
+    pattern-sanitizers:
+      - patterns:
+          - pattern: $F(...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: (?i)^(?:[\w$]+\.)*(?:sanitize|escape|purify|encode|safe|assertSafe)\w*$
+      - pattern: Number(...)
+      - pattern: parseInt(...)
+      - pattern: parseFloat(...)
+      # The body of a response fetched from a URL is not direct reflection of the request (that is SSRF's job,
+      # see ssrf.yml); treating it as tainted would double-report every proxy endpoint.
+      - pattern: fetch(...)
+      - pattern: axios(...)
+      - pattern: got(...)
+      - patterns:
+          - pattern: $LIB.$M(...)
+          - metavariable-regex:
+              metavariable: $LIB
+              regex: ^(axios|got|ky|http|https|undici|needle|superagent)$
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $RES.send($V)
+              - pattern: $RES. ... .send($V)
+              - pattern: $RES.write($V)
+              - pattern: $RES.end($V)
+          - metavariable-regex:
+              metavariable: $RES
+              regex: ^(res|response|reply)$
+          - pattern-not: $RES.send({...})
+          - pattern-not: $RES.send([...])
+          - pattern-not: $RES.type("text/plain"). ... .send(...)
+          - pattern-not: $RES.type("json"). ... .send(...)
+          - pattern-not: $RES.type("application/json"). ... .send(...)
+          - focus-metavariable: $V
+      - patterns:
+          - pattern: new $C($V, $OPTS)
+          - metavariable-regex:
+              metavariable: $C
+              regex: ^(Response|NextResponse)$
+          - metavariable-regex:
+              metavariable: $OPTS
+              regex: (?is).*text/html
+          - focus-metavariable: $V
+
+  - id: xss-eval-like
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      eval(), new Function() and setTimeout/setInterval with a built string execute text as code. If any
+      part of it comes from a user, a URL or an API, it is code injection (XSS, CWE-95). Pass a function
+      instead, or parse data with JSON.parse.
+    metadata:
+      category: security
+      cwe: ["CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code ('Eval Injection')"]
+      owasp: ["A03:2021 - Injection"]
+      confidence: MEDIUM
+      impact: HIGH
+      likelihood: MEDIUM
+      technology: [react, browser, express]
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: eval($X)
+                  - pattern: new Function(..., $X)
+              - pattern-not: eval("...")
+              - pattern-not: new Function("...")
+              - pattern-not: new Function("...", "...")
+          # setTimeout/setInterval are only eval-like when the first argument is a built string
+          - patterns:
+              - pattern-either:
+                  - pattern: setTimeout($X, ...)
+                  - pattern: setInterval($X, ...)
+              - pattern-not: setTimeout("...", ...)
+              - pattern-not: setInterval("...", ...)
+              - metavariable-regex:
+                  metavariable: $X
+                  regex: ^["'\x60]
+
+  - id: xss-javascript-url-literal
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      A javascript: URL in href/src/action runs script on click or load. Use a real URL and an onClick
+      handler instead.
+    metadata:
+      category: security
+      cwe: ["CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"]
+      owasp: ["A03:2021 - Injection"]
+      confidence: HIGH
+      impact: MEDIUM
+      likelihood: MEDIUM
+      technology: [react]
+    patterns:
+      - pattern: '<$C ... $ATTR="$V" ... />'
+      - metavariable-regex:
+          metavariable: $ATTR
+          regex: ^(href|src|action|formAction)$
+      - metavariable-regex:
+          metavariable: $V
+          regex: '(?i)^\s*javascript:'

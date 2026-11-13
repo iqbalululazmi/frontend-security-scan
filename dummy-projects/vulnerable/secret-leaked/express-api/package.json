@@ -1,0 +1,1 @@
+{ "name": "dummy-secret-express-api", "private": true, "type": "module", "dependencies": { "express": "^4.19.0" } }
